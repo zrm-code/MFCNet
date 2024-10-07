@@ -5,7 +5,7 @@
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
-from .MFCNet_CTrans import ChannelTransformer
+from .MFC_CTrans import ChannelTransformer
 
 
 def get_activation(activation_type):
@@ -189,7 +189,6 @@ class ResNet34_3x3(nn.Module):
         self.BasicBlock3x3_2 = BasicBlock3x3(in_channels, out_channels)
 
     def forward(self, x):
-        # x = x.float()  # 像素转换浮点数
         x = self.BasicBlock3x3_1(x)
         x = self.BasicBlock3x3_2(x)
         return x
@@ -216,22 +215,21 @@ class Flatten(nn.Module):
         return x.view(x.size(0), -1)
 
 
-# idea patch + channel 注意 + 残差  =  观察实验结果
-class UpBlock(nn.Module):  # 定义上采样的通道注意
+class UpBlock(nn.Module):
     def __init__(self, in_channels, out_channels, nb_Conv, activation='ReLU'):
         super().__init__()
-        self.up = nn.Upsample(scale_factor=2)  # 上采样，scale_factor=2表示2*2上采样
+        self.up = nn.Upsample(scale_factor=2)
         self.nConvs = _make_nConv(in_channels, out_channels, nb_Conv, activation)
 
     def forward(self, x, skip_x):
-        up = self.up(x)  # 对X进行上采样
-        x = torch.cat([skip_x, up], dim=1)  # dim 1 is the channel dimension（对跳跃连接的特征图和上采样的特征图进行拼接）
+        up = self.up(x)
+        x = torch.cat([skip_x, up], dim=1)  # dim 1 is the channel dimension
         return self.nConvs(x)
 
 
 class CA(nn.Module):
     """
-    Channel Attention Block
+    Channel Attention
     """
 
     def __init__(self, F_g, F_x):
@@ -243,7 +241,7 @@ class CA(nn.Module):
         self.mlp_g = nn.Sequential(
             Flatten(),
             nn.Linear(F_g, F_x))
-
+        self.relu = nn.ReLU(inplace=True)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x, g):
@@ -259,37 +257,34 @@ class CA(nn.Module):
         x_after_channel = x * scale  # 对通道进行抑制和增强
         g_after_channel = g * scale
 
-        return x_after_channel, g_after_channel
+        return self.relu(x_after_channel), self.relu(g_after_channel)
 
 
 class SA(nn.Module):
     """
-    Spatial Attention Block
+    Spatial Attention
     """
 
-    def __init__(self, config, F_g, F_x, img_size=224):
+    def __init__(self):
         super().__init__()
         vis = False
-        in_channels = config.base_channel  # inchannenl 64
         self.relu = nn.ReLU(inplace=True)
-        self.inconv = nn.Conv2d(512, 1, 3, padding=1)  # 1*1卷积
-        self.Activation = nn.Sigmoid()  # 1*1激活函数
+        self.inconv = nn.Conv2d(512, 1, 3, padding=1)
+        self.Activation = nn.Sigmoid()
 
     def forward(self, g, x):
-        g1_sum_tensor = torch.sum(g, dim=1)  # 像素压缩
+        g1_sum_tensor = torch.sum(g, dim=1)  # pixel compression
         g1_sum_tensor = torch.unsqueeze(g1_sum_tensor, dim=1)  # Reshape
 
-        x1_sum_tensor = torch.sum(x, dim=1)  # 像素压缩
+        x1_sum_tensor = torch.sum(x, dim=1)  # pixel compression
         x1_sum_tensor = torch.unsqueeze(x1_sum_tensor, dim=1)
 
-        single_channel = torch.sigmoid(g1_sum_tensor.expand_as(g) + x1_sum_tensor.expand_as(x))  # 单通道空间特征图 + sigmoid
+        single_channel = torch.sigmoid(g1_sum_tensor.expand_as(g) + x1_sum_tensor.expand_as(x))
 
-        output_g1 = g * single_channel  # 对空间特征进行抑制和增强
+        output_g1 = g * single_channel
         output_x1 = x * single_channel
 
-        SAB_attention = (output_g1 + output_x1) / 2.0
-
-        return SAB_attention * g + SAB_attention * x
+        return self.relu(output_g1 + output_x1)
 
 
 class DCCT(nn.Module):
@@ -318,22 +313,22 @@ class DCCT(nn.Module):
     def forward(self, x1_3, x2_3, x3_3, x4_3, x1_5, x2_5, x3_5, x4_5):
         x1_3, x2_3, x3_3, x4_3, atten_weight1 = self.CCT_3(x1_3, x2_3, x3_3, x4_3)
         x1_5, x2_5, x3_5, x4_5, atten_weight2 = self.CCT_5(x1_5, x2_5, x3_5, x4_5)
-        h1_3, h1_5 = self.CA1(x1_3, x1_5)
-        x1_3 = x1_3 + h1_3
-        x1_5 = x1_5 + h1_5
+        x1_3, x1_5 = self.CA1(x1_3, x1_5)
+        # x1_3 = x1_3 + h1_3
+        # x1_5 = x1_5 + h1_5
 
-        h2_3, h2_5 = self.CA2(x2_3, x2_5)
-        x2_3 = x2_3 + h2_3
-        x2_5 = x2_5 + h2_5
+        x2_3, x2_5 = self.CA2(x2_3, x2_5)
+        # x2_3 = x2_3 + h2_3
+        # x2_5 = x2_5 + h2_5
 
-        h3_3, h3_5 = self.CA3(x3_3, x3_5)
-        x3_3 = x3_3 + h3_3
-        x3_5 = x3_5 + h3_5
+        x3_3, x3_5 = self.CA3(x3_3, x3_5)
+        # x3_3 = x3_3 + h3_3
+        # x3_5 = x3_5 + h3_5
 
-        h4_3, h4_5 = self.CA4(x4_3, x4_5)
-        x4_3 = x4_3 + h4_3
-        x4_5 = x4_5 + h4_5
-        
+        x4_3, x4_5 = self.CA4(x4_3, x4_5)
+        # x4_3 = x4_3 + h4_3
+        # x4_5 = x4_5 + h4_5
+
         return x1_3, x2_3, x3_3, x4_3, x1_5, x2_5, x3_5, x4_5
 
 
@@ -352,7 +347,6 @@ class MFCNet(nn.Module):
         # ---------------------------------------------------------------#
         # -----------------------------encoder---------------------------#
         # ---------------------------------------------------------------#
-
         # stage1
         self.conv1_3x3 = ResNet34_3x3(64, 64)
         self.conv1_5x5 = ResNet34_5x5(64, 64)
@@ -371,7 +365,7 @@ class MFCNet(nn.Module):
         self.conv4_5x5 = ResNet34_5x5(512, 512)
 
         # ---------------------------------------------------------------#
-        # -----------------------transformer of channel------------------#
+        # -----------------------change channel------------------#
         # ---------------------------------------------------------------#
 
         self.nConvs1_3 = _make_nConv(64, 128, 2, 'ReLU')
@@ -407,8 +401,6 @@ class MFCNet(nn.Module):
         self.bnbg_2 = nn.BatchNorm2d(512)
         self.relubg_2 = nn.ReLU(inplace=True)
 
-        # ----------------融合函数-------------- #
-
         self.conv1_Fusion = nn.Conv2d(64 * 2, 64, 3, padding=1)
         self.bn1_Fusion = nn.BatchNorm2d(64)
         self.relu1_Fusion = nn.ReLU(inplace=True)
@@ -430,14 +422,13 @@ class MFCNet(nn.Module):
         self.relu_Fusion = nn.ReLU(inplace=True)
 
         # DCCT Module
-
         self.DCCT = DCCT(config, img_size=224)
 
-        # --------------Spatial Fusion------------------------- #
-        self.SAB4 = SA(config, F_g=512, F_x=512, img_size=224)
-        self.SAB3 = SA(config, F_g=256, F_x=256, img_size=224)
-        self.SAB2 = SA(config, F_g=128, F_x=128, img_size=224)
-        self.SAB1 = SA(config, F_g=64, F_x=64, img_size=224)
+        # --------------Spatial attention Fusion------------------------- #
+        self.SAB4 = SA()
+        self.SAB3 = SA()
+        self.SAB2 = SA()
+        self.SAB1 = SA()
 
         # in_channels * 16:1024  in_channels * 4:256
         self.up4 = UpBlock(in_channels * 16, in_channels * 4, nb_Conv=2)
@@ -450,9 +441,6 @@ class MFCNet(nn.Module):
 
         # in_channels * 2 :128  in_channels:64
         self.up1 = UpBlock(in_channels * 2, in_channels, nb_Conv=2)
-
-        self.outc = nn.Conv2d(in_channels, n_classes, kernel_size=(1, 1), stride=(1, 1))
-        self.last_activation = nn.Sigmoid()  # if using BCELoss
 
         # ---------------------------------------------------------------#
         # -----------------------Side Output-----------------------------#
@@ -482,7 +470,6 @@ class MFCNet(nn.Module):
         h1_3 = self.conv1_3x3(x0)
         h1_5 = self.conv1_5x5(x0)
 
-        # 残差 Patch 注意
         x1_3 = h1_3  # (224,224,64)
         x1_5 = h1_5
 
@@ -548,23 +535,22 @@ class MFCNet(nn.Module):
         hx = self.relubg_1(self.bnbg_1(self.convbg_1(x5)))
         hx = self.relubg_m(self.bnbg_m(self.convbg_m(hx)))
         hbg = self.relubg_2(self.bnbg_2(self.convbg_2(hx)))
-        x5 = hbg  # 此新设置------设置残差
+        x5 = hbg
 
         # ===================DCCT================#
-
         x1_3, x2_3, x3_3, x4_3, x1_5, x2_5, x3_5, x4_5 = \
             self.DCCT(x1_3, x2_3, x3_3, x4_3, x1_5, x2_5, x3_5, x4_5)
 
-        # ===================Spatial Connection Cross Attention（OK）================#
+        # ==================Spatial Connection Cross Attention==========#
         enhance_feature_x4 = self.SAB4(x4_3, x4_5)
         enhance_feature_x3 = self.SAB3(x3_3, x3_5)
         enhance_feature_x2 = self.SAB2(x2_3, x2_5)
         enhance_feature_x1 = self.SAB1(x1_3, x1_5)
 
-        o4 = self.up4(x5, enhance_feature_x4)  # x5:512    o4:256
-        o3 = self.up3(o4, enhance_feature_x3)  # x:512     o3:128
-        o2 = self.up2(o3, enhance_feature_x2)  # x:256     o2:64
-        o1 = self.up1(o2, enhance_feature_x1)  # x:128     o1:64
+        o4 = self.up4(x5, enhance_feature_x4)  # o4:256
+        o3 = self.up3(o4, enhance_feature_x3)  # o3:128
+        o2 = self.up2(o3, enhance_feature_x2)  # o2:64
+        o1 = self.up1(o2, enhance_feature_x1)  # o1:64
 
         # -------------Side Output-------------
         d5 = self.outconv5(x5)  # side out
