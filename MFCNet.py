@@ -254,7 +254,7 @@ class CA(nn.Module):
 
         scale = torch.sigmoid(channel_att_x + channel_att_g).unsqueeze(2).unsqueeze(3).expand_as(x)
 
-        x_after_channel = x * scale  # 对通道进行抑制和增强
+        x_after_channel = x * scale  
         g_after_channel = g * scale
 
         return self.relu(x_after_channel), self.relu(g_after_channel)
